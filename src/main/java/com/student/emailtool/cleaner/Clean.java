@@ -1,5 +1,6 @@
 package com.student.emailtool.cleaner;
 
+import com.student.emailtool.model.Contact;
 import com.student.emailtool.util.EmailValidator;
 
 import java.io.IOException;
@@ -42,28 +43,21 @@ public class Clean {
                 continue;
             }
 
-            String name = fields[0].trim();
-            String email = fields[1].trim();
-            String city = fields[2].trim();
+            Contact contact = new Contact(
+                    fields[0].trim(),
+                    fields[1].trim(),
+                    fields[2].trim()
+            );
 
-            if (!EmailValidator.isValid(email)) {
+            if (!EmailValidator.isValid(contact.getEmail())) {
                 badLines.add(raw);
                 continue;
             }
 
             if ("clean".equals(mode)) {
-                if ("formal".equals(format)) {
-                    name = capitalizeWords(name);
-                    email = email.toLowerCase();
-                    city = capitalizeWords(city);
-                } else if ("lower".equals(format)) {
-                    name = name.toLowerCase();
-                    email = email.toLowerCase();
-                    city = city.toLowerCase();
-                }
-                goodLines.add(String.join(",", name, email, city));
+                goodLines.add(contact.toCsvLine(format));
             } else if ("emails".equals(mode)) {
-                email = email.toLowerCase();
+                String email = contact.getEmail().toLowerCase();
                 if (dedup) {
                     if (emailSet.add(email)) {
                         goodLines.add(email);
@@ -139,17 +133,4 @@ public class Clean {
         return new String[0];
     }
 
-    private static String capitalizeWords(String value) {
-        String[] words = value.split("\\s+");
-        StringBuilder sb = new StringBuilder();
-        for (String word : words) {
-            if (word.isEmpty()) {
-                continue;
-            }
-            sb.append(Character.toUpperCase(word.charAt(0)))
-              .append(word.substring(1).toLowerCase())
-              .append(" ");
-        }
-        return sb.toString().trim();
-    }
 }
