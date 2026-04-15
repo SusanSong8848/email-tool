@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 public class Mailer {
     private static final long MIN_SEND_INTERVAL_MS = 501;
@@ -139,6 +141,11 @@ public class Mailer {
     private Set<String> loadBlacklist(Path blacklistFile) throws IOException {
         Set<String> blacklist = new HashSet<>();
         if (blacklistFile == null) {
+            return blacklist;
+        }
+
+        if (!Files.exists(blacklistFile)) {
+            System.err.println("Warning: blacklist file not found, continue without blacklist -> " + blacklistFile);
             return blacklist;
         }
 
@@ -273,7 +280,7 @@ public class Mailer {
             Files.createDirectories(logFile.getParent());
         }
 
-        long lastSendMillis = 0;
+        long lastSendStartNanos = 0L;
         for (String recipientEmail : recipients) {
             String normalizedRecipient = recipientEmail.trim().toLowerCase();
             if (blacklist.contains(normalizedRecipient)) {
@@ -293,7 +300,7 @@ public class Mailer {
 
             for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
                 try {
-                    lastSendMillis = enforceSendRateLimit(lastSendMillis, minSendIntervalMs);
+                    lastSendStartNanos = enforceSendRateLimit(lastSendStartNanos, minSendIntervalMs);
 
                     MimeMessage message = buildMimeMessage(session, username, recipientEmail, preparedEmail.subject, preparedEmail.body);
                     Transport.send(message);
@@ -348,16 +355,30 @@ public class Mailer {
         return value.trim();
     }
 
-    private long enforceSendRateLimit(long lastSendMillis, long minIntervalMs) {
-        long now = System.currentTimeMillis();
-        if (lastSendMillis > 0) {
-            long elapsed = now - lastSendMillis;
-            long waitMillis = minIntervalMs - elapsed;
-            if (waitMillis > 0) {
-                sleepSafely(waitMillis);
-            }
+    private long enforceSendRateLimit(long lastSendStartNanos, long minIntervalMs) {
+        if (lastSendStartNanos <= 0L) {
+            return System.nanoTime();
         }
-        return System.currentTimeMillis();
+
+        long minIntervalNanos = TimeUnit.MILLISECONDS.toNanos(minIntervalMs);
+        long nextAllowedStartNanos = lastSendStartNanos + minIntervalNanos;
+        long now = System.nanoTime();
+
+        while (now < nextAllowedStartNanos) {
+            sleepPreciselyNanos(nextAllowedStartNanos - now);
+            now = System.nanoTime();
+        }
+        return now;
+    }
+
+    private void sleepPreciselyNanos(long nanos) {
+        if (nanos <= 0L) {
+            return;
+        }
+        LockSupport.parkNanos(nanos);
+        if (Thread.currentThread().isInterrupted()) {
+            throw new IllegalStateException("Interrupted while waiting.");
+        }
     }
 
     private long loadIntervalProperty(Properties properties,
