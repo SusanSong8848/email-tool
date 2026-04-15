@@ -1,24 +1,37 @@
 package com.student.emailtool.mailer;
 
 import com.student.emailtool.model.Contact;
+import com.student.emailtool.model.SendLog;
+import jakarta.mail.Authenticator;
+import jakarta.mail.Message;
+import jakarta.mail.MessagingException;
+import jakarta.mail.PasswordAuthentication;
+import jakarta.mail.Session;
+import jakarta.mail.Transport;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeMessage;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 
 public class Mailer {
-    private static final DateTimeFormatter OUTBOX_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS");
+    private static final long MIN_SEND_INTERVAL_MS = 501;
+    private static final int MAX_RETRIES = 2;
+    private static final long RETRY_INTERVAL_MS = 3000;
 
     public static void main(String[] args) {
         try {
@@ -36,8 +49,8 @@ public class Mailer {
                 return;
             }
 
-            mailer.sendAllEmails();
-            System.out.println("Send mode selected. sendAllEmails() is currently a placeholder.");
+            mailer.sendAllEmails(recipients, blacklist, contactsByEmail, template, Paths.get(cliArgs.logFile));
+            System.out.println("Send completed. Logs appended to " + cliArgs.logFile);
         } catch (IllegalArgumentException e) {
             System.err.println("Argument error: " + e.getMessage());
             printUsage();
@@ -85,6 +98,9 @@ public class Mailer {
         }
         if (cliArgs.previewMode == cliArgs.sendMode) {
             throw new IllegalArgumentException("Choose exactly one mode: --preview or --send.");
+        }
+        if (cliArgs.sendMode && cliArgs.logFile == null) {
+            throw new IllegalArgumentException("--send requires --log <sent.log>.");
         }
 
         return cliArgs;
@@ -215,6 +231,7 @@ public class Mailer {
         Path outboxDir = Paths.get("outbox");
         Files.createDirectories(outboxDir);
 
+        Session previewSession = Session.getInstance(new Properties());
         int counter = 0;
         for (String recipientEmail : recipients) {
             String key = recipientEmail.toLowerCase();
@@ -227,22 +244,185 @@ public class Mailer {
                 continue;
             }
 
-            PreparedEmail email = prepareEmail(contact, template.subjectTemplate, template.bodyTemplate);
-            String timestamp = LocalDateTime.now().format(OUTBOX_TIME_FORMAT);
-            String sanitized = recipientEmail.replaceAll("[^A-Za-z0-9._-]", "_");
-            String fileName = "to_" + sanitized + "_" + timestamp + "_" + counter + ".txt";
-
-            String content = "To: " + recipientEmail + System.lineSeparator()
-                    + "Subject: " + email.subject + System.lineSeparator()
-                    + System.lineSeparator()
-                    + email.body;
-            Files.writeString(outboxDir.resolve(fileName), content, StandardCharsets.UTF_8);
-            counter++;
+            try {
+                PreparedEmail email = prepareEmail(contact, template.subjectTemplate, template.bodyTemplate);
+                String fileName = "to_" + sanitizeFilePart(recipientEmail) + "_" + counter + ".eml";
+                MimeMessage mimeMessage = buildMimeMessage(previewSession, "preview@local", recipientEmail, email.subject, email.body);
+                byte[] emlBytes = toRfc822Bytes(mimeMessage);
+                Files.write(outboxDir.resolve(fileName), emlBytes);
+                counter++;
+            } catch (MessagingException | IOException e) {
+                System.err.println("Preview skipped for " + recipientEmail + ": " + e.getMessage());
+            }
         }
     }
 
-    public void sendAllEmails() {
-        // Placeholder: actual send flow will be implemented in the next step.
+    public void sendAllEmails(List<String> recipients,
+                              Set<String> blacklist,
+                              Map<String, Contact> contactsByEmail,
+                              Template template,
+                              Path logFile) throws IOException {
+        Properties smtpProps = loadMailProperties();
+        String username = requireProperty(smtpProps, "mail.username");
+        String password = requireProperty(smtpProps, "mail.password");
+        long minSendIntervalMs = loadIntervalProperty(smtpProps, "mail.send.minIntervalMs", MIN_SEND_INTERVAL_MS, MIN_SEND_INTERVAL_MS);
+        long retryIntervalMs = loadIntervalProperty(smtpProps, "mail.retry.intervalMs", RETRY_INTERVAL_MS, 0);
+        Session session = createMailSession(smtpProps, username, password);
+
+        if (logFile.getParent() != null) {
+            Files.createDirectories(logFile.getParent());
+        }
+
+        long lastSendMillis = 0;
+        for (String recipientEmail : recipients) {
+            String normalizedRecipient = recipientEmail.trim().toLowerCase();
+            if (blacklist.contains(normalizedRecipient)) {
+                appendLog(logFile, new SendLog(Instant.now(), recipientEmail, "", "SKIPPED", "SKIPPED (blacklisted)"));
+                continue;
+            }
+
+            Contact contact = contactsByEmail.get(normalizedRecipient);
+            if (contact == null) {
+                appendLog(logFile, new SendLog(Instant.now(), recipientEmail, "", "FAILED", "contact not found"));
+                continue;
+            }
+
+            PreparedEmail preparedEmail = prepareEmail(contact, template.subjectTemplate, template.bodyTemplate);
+            boolean sent = false;
+            String failureReason = "";
+
+            for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+                try {
+                    lastSendMillis = enforceSendRateLimit(lastSendMillis, minSendIntervalMs);
+
+                    MimeMessage message = buildMimeMessage(session, username, recipientEmail, preparedEmail.subject, preparedEmail.body);
+                    Transport.send(message);
+                    appendLog(logFile, new SendLog(Instant.now(), recipientEmail, preparedEmail.subject, "SUCCESS", ""));
+                    sent = true;
+                    break;
+                } catch (MessagingException e) {
+                    failureReason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                    if (attempt < MAX_RETRIES) {
+                        sleepSafely(retryIntervalMs);
+                    }
+                }
+            }
+
+            if (!sent) {
+                appendLog(logFile, new SendLog(Instant.now(), recipientEmail, preparedEmail.subject, "FAILED", failureReason));
+            }
+        }
+    }
+
+    private Properties loadMailProperties() throws IOException {
+        Properties properties = new Properties();
+        try (InputStream in = Thread.currentThread().getContextClassLoader().getResourceAsStream("mail.properties")) {
+            if (in == null) {
+                throw new IOException("Cannot find mail.properties in classpath.");
+            }
+            properties.load(in);
+        }
+        requireProperty(properties, "mail.smtp.host");
+        requireProperty(properties, "mail.smtp.port");
+        requireProperty(properties, "mail.username");
+        requireProperty(properties, "mail.password");
+        properties.putIfAbsent("mail.smtp.auth", "true");
+        properties.putIfAbsent("mail.smtp.starttls.enable", "true");
+        return properties;
+    }
+
+    private Session createMailSession(Properties smtpProps, String username, String password) {
+        return Session.getInstance(smtpProps, new Authenticator() {
+            @Override
+            protected PasswordAuthentication getPasswordAuthentication() {
+                return new PasswordAuthentication(username, password);
+            }
+        });
+    }
+
+    private String requireProperty(Properties properties, String key) {
+        String value = properties.getProperty(key);
+        if (value == null || value.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing required property: " + key);
+        }
+        return value.trim();
+    }
+
+    private long enforceSendRateLimit(long lastSendMillis, long minIntervalMs) {
+        long now = System.currentTimeMillis();
+        if (lastSendMillis > 0) {
+            long elapsed = now - lastSendMillis;
+            long waitMillis = minIntervalMs - elapsed;
+            if (waitMillis > 0) {
+                sleepSafely(waitMillis);
+            }
+        }
+        return System.currentTimeMillis();
+    }
+
+    private long loadIntervalProperty(Properties properties,
+                                      String key,
+                                      long defaultValue,
+                                      long minValue) {
+        String raw = properties.getProperty(key);
+        if (raw == null || raw.trim().isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            long parsed = Long.parseLong(raw.trim());
+            if (parsed < minValue) {
+                throw new IllegalArgumentException("Property " + key + " must be >= " + minValue + " ms.");
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Property " + key + " must be a valid integer milliseconds value.", e);
+        }
+    }
+
+    private void sleepSafely(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting.", e);
+        }
+    }
+
+    private MimeMessage buildMimeMessage(Session session,
+                                         String from,
+                                         String to,
+                                         String subject,
+                                         String body) throws MessagingException {
+        MimeMessage message = new MimeMessage(session);
+        message.setFrom(new InternetAddress(from));
+        message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(to, false));
+        message.setSubject(subject, StandardCharsets.UTF_8.name());
+        message.setText(body, StandardCharsets.UTF_8.name());
+        message.setSentDate(new java.util.Date());
+        return message;
+    }
+
+    private byte[] toRfc822Bytes(MimeMessage message) throws IOException, MessagingException {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            message.saveChanges();
+            message.writeTo(out);
+            return out.toByteArray();
+        }
+    }
+
+    private void appendLog(Path logFile, SendLog log) throws IOException {
+        Files.writeString(logFile,
+                log.toCsvLine() + System.lineSeparator(),
+                StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND);
+    }
+
+    private String sanitizeFilePart(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "unknown";
+        }
+        return raw.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
     private static class CliArgs {

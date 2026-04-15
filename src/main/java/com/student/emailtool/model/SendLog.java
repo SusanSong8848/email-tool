@@ -1,33 +1,63 @@
 package com.student.emailtool.model;
 
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 
 public class SendLog {
-    private final String email;
-    private final boolean success;
-    private final String message;
-    private final Instant sentAt;
+    private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_INSTANT;
 
-    public SendLog(String email, boolean success, String message, Instant sentAt) {
-        this.email = email;
-        this.success = success;
-        this.message = message;
-        this.sentAt = sentAt;
+    private final Instant timestamp;
+    private final String recipientEmail;
+    private final String subject;
+    private final String status;
+    private final String failureReason;
+
+    public SendLog(Instant timestamp,
+                   String recipientEmail,
+                   String subject,
+                   String status,
+                   String failureReason) {
+        this.timestamp = timestamp;
+        this.recipientEmail = recipientEmail;
+        this.subject = subject;
+        this.status = status;
+        this.failureReason = failureReason;
     }
 
-    public String getEmail() {
-        return email;
+    public Instant getTimestamp() {
+        return timestamp;
     }
 
-    public boolean isSuccess() {
-        return success;
+    public String getRecipientEmail() {
+        return recipientEmail;
     }
 
-    public String getMessage() {
-        return message;
+    public String getSubject() {
+        return subject;
     }
 
-    public Instant getSentAt() {
-        return sentAt;
+    public String getStatus() {
+        return status;
+    }
+
+    public String getFailureReason() {
+        return failureReason;
+    }
+
+    public String toCsvLine() {
+        return escapeCsv(ISO_FORMATTER.format(timestamp)) + ","
+                + escapeCsv(recipientEmail) + ","
+                + escapeCsv(subject) + ","
+                + escapeCsv(status) + ","
+                + escapeCsv(failureReason == null ? "" : failureReason);
+    }
+
+    private static String escapeCsv(String value) {
+        String safe = value == null ? "" : value;
+        boolean needQuote = safe.contains(",") || safe.contains("\"") || safe.contains("\n") || safe.contains("\r");
+        if (!needQuote) {
+            return safe;
+        }
+        return "\"" + safe.replace("\"", "\"\"") + "\"";
     }
 }
