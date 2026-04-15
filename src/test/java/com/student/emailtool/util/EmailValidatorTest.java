@@ -12,6 +12,21 @@ class EmailValidatorTest {
     }
 
     @Test
+    void shouldRejectMissingAt() {
+        assertFalse(EmailValidator.isValid("alice.example.com"));
+    }
+
+    @Test
+    void shouldRejectAtAtBeginning() {
+        assertFalse(EmailValidator.isValid("@example.com"));
+    }
+
+    @Test
+    void shouldRejectAtAtEnd() {
+        assertFalse(EmailValidator.isValid("alice@"));
+    }
+
+    @Test
     void shouldRejectMultipleAt() {
         assertFalse(EmailValidator.isValid("a@@example.com"));
     }
