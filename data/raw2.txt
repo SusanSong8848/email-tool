@@ -1,5 +1,0 @@
-﻿Tom|TOM@EXAMPLE.COM|Hangzhou
-tom,tom@example.com,hangzhou
-Jerry; jerry@Example.Com ; Shanghai
-BadGuy|badguy.example.com|Nowhere
-ALICE, Alice@Example.COM, SH

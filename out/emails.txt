@@ -1,3 +1,0 @@
-tom@example.com
-jerry@example.com
-alice@example.com

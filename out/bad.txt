@@ -1,4 +1,0 @@
-Daisy, daisyexample.com, Paris
-Eve, eve@evil., LA
-Frank|frank@foo.com
-,,,
