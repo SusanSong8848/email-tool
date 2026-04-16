@@ -251,3 +251,6 @@ email-tool/
 [Mailer.java 安全策略实现审查与验证](src/docs/chat5.json)
 [Java Mailer 类初始化错误分析](src/docs/chat6.json)
 [Java邮件工具类初始化错误分析](src/docs/chat7.json)
+
+# 远程仓库 URL：
+__https://github.com/SusanSong8848/email-tool.git__ 本项目以同步到本人的Git远程仓库
