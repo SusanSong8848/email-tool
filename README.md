@@ -241,3 +241,13 @@ email-tool/
 - **问题**：预览模式最初只生成了纯文本文件，缺少标准邮件头，无法直接导入邮件客户端。
 - **我的改进要求**：要求生成符合 RFC 822 格式的 .eml 文件，包含 From、To、Subject、Date、MIME-Version 等头部。
 - **改进效果**：预览文件可直接双击用 Outlook/Thunderbird 打开，极大提升了预览体验。
+
+
+## Vibe-coding：
+[Java 邮件群发工具 Maven 项目结构创建](src/docs/chat1.json)
+[重构 Clean.java 以支持 Contact 类](src/docs/chat2.json)
+[完善 Mailer.java 中的 sendAllEmails() 方法](src/docs/chat3.json)
+[JUnit 5 单元测试编写请求](src/docs/chat4.json)
+[Mailer.java 安全策略实现审查与验证](src/docs/chat5.json)
+[Java Mailer 类初始化错误分析](src/docs/chat6.json)
+[Java邮件工具类初始化错误分析](src/docs/chat7.json)
