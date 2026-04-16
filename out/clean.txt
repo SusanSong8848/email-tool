@@ -1,0 +1,4 @@
+﻿alice,alice@example.com,Shanghai
+Bob,bob@example.com,Beijing
+Charlie,charlie@example.com,New York
+Grace,grace@example.com,Shen Zhen

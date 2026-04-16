@@ -1,0 +1,6 @@
+﻿To: {email}
+Subject: Club Notice: Welcome {name}
+
+Hi {name},
+Your city is {city}.
+See you at the club!

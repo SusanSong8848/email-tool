@@ -2,16 +2,7 @@ package com.student.emailtool.mailer;
 
 import com.student.emailtool.model.Contact;
 import com.student.emailtool.model.SendLog;
-import jakarta.mail.Authenticator;
-import jakarta.mail.Message;
-import jakarta.mail.MessagingException;
-import jakarta.mail.PasswordAuthentication;
-import jakarta.mail.Session;
-import jakarta.mail.Transport;
-import jakarta.mail.internet.InternetAddress;
-import jakarta.mail.internet.MimeMessage;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -20,6 +11,9 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -46,7 +40,8 @@ public class Mailer {
             Template template = mailer.loadTemplate(Paths.get(cliArgs.templateFile));
 
             if (cliArgs.previewMode) {
-                mailer.generatePreviewFiles(recipients, blacklist, contactsByEmail, template);
+                Path previewLogFile = cliArgs.logFile == null ? null : Paths.get(cliArgs.logFile);
+                mailer.generatePreviewFiles(recipients, blacklist, contactsByEmail, template, previewLogFile);
                 System.out.println("Preview completed. Files saved to outbox/");
                 return;
             }
@@ -122,7 +117,7 @@ public class Mailer {
         System.out.println("  -t <template.txt>    template file with Subject on first line");
         System.out.println("  --preview            preview mode, writes drafts into outbox/");
         System.out.println("  --send               actual send mode");
-        System.out.println("  --log <sent.log>     send log file path");
+        System.out.println("  --log <sent.log>     log file path (required for --send, optional for --preview)");
         System.out.println("  --blacklist <file>   optional blacklist file");
     }
 
@@ -199,14 +194,34 @@ public class Mailer {
             throw new IllegalArgumentException("Template file is empty.");
         }
 
-        String firstLine = lines.get(0);
-        String prefix = "Subject:";
-        if (!firstLine.regionMatches(true, 0, prefix, 0, prefix.length())) {
-            throw new IllegalArgumentException("Template first line must start with 'Subject:'.");
+        String subjectTemplate = null;
+        int bodyStartIndex = 0;
+
+        while (bodyStartIndex < lines.size()) {
+            String line = lines.get(bodyStartIndex);
+            if (line.trim().isEmpty()) {
+                bodyStartIndex++;
+                break;
+            }
+
+            int colonIndex = line.indexOf(':');
+            if (colonIndex < 0) {
+                break;
+            }
+
+            String headerName = line.substring(0, colonIndex).trim();
+            String headerValue = line.substring(colonIndex + 1).trim();
+            if ("Subject".equalsIgnoreCase(headerName)) {
+                subjectTemplate = headerValue;
+            }
+            bodyStartIndex++;
         }
 
-        String subjectTemplate = firstLine.substring(prefix.length()).trim();
-        String bodyTemplate = String.join(System.lineSeparator(), lines.subList(1, lines.size()));
+        if (subjectTemplate == null) {
+            throw new IllegalArgumentException("Template headers must include 'Subject:'.");
+        }
+
+        String bodyTemplate = String.join(System.lineSeparator(), lines.subList(bodyStartIndex, lines.size()));
         return new Template(subjectTemplate, bodyTemplate);
     }
 
@@ -234,34 +249,51 @@ public class Mailer {
     private void generatePreviewFiles(List<String> recipients,
                                       Set<String> blacklist,
                                       Map<String, Contact> contactsByEmail,
-                                      Template template) throws IOException {
+                                      Template template,
+                                      Path logFile) throws IOException {
         Path outboxDir = Paths.get("outbox");
         Files.createDirectories(outboxDir);
+        if (logFile != null && logFile.getParent() != null) {
+            Files.createDirectories(logFile.getParent());
+        }
 
-        Session previewSession = Session.getInstance(new Properties());
         int counter = 0;
         for (String recipientEmail : recipients) {
             String key = recipientEmail.toLowerCase();
             if (blacklist.contains(key)) {
+                appendPreviewLog(logFile, recipientEmail, "", "SKIPPED", "SKIPPED (blacklisted)");
                 continue;
             }
 
             Contact contact = contactsByEmail.get(key);
             if (contact == null) {
+                appendPreviewLog(logFile, recipientEmail, "", "SKIPPED", "contact not found");
                 continue;
             }
 
             try {
                 PreparedEmail email = prepareEmail(contact, template.subjectTemplate, template.bodyTemplate);
                 String fileName = "to_" + sanitizeFilePart(recipientEmail) + "_" + counter + ".eml";
-                MimeMessage mimeMessage = buildMimeMessage(previewSession, "preview@local", recipientEmail, email.subject, email.body);
-                byte[] emlBytes = toRfc822Bytes(mimeMessage);
+                byte[] emlBytes = buildPreviewEml("preview@local", recipientEmail, email.subject, email.body);
                 Files.write(outboxDir.resolve(fileName), emlBytes);
+                appendPreviewLog(logFile, recipientEmail, email.subject, "PREVIEW", "");
                 counter++;
-            } catch (MessagingException | IOException e) {
+            } catch (IOException e) {
+                appendPreviewLog(logFile, recipientEmail, "", "FAILED", e.getMessage());
                 System.err.println("Preview skipped for " + recipientEmail + ": " + e.getMessage());
             }
         }
+    }
+
+    private void appendPreviewLog(Path logFile,
+                                  String recipientEmail,
+                                  String subject,
+                                  String status,
+                                  String reason) throws IOException {
+        if (logFile == null) {
+            return;
+        }
+        appendLog(logFile, new SendLog(Instant.now(), recipientEmail, subject, status, reason));
     }
 
     public void sendAllEmails(List<String> recipients,
@@ -271,10 +303,9 @@ public class Mailer {
                               Path logFile) throws IOException {
         Properties smtpProps = loadMailProperties();
         String username = requireProperty(smtpProps, "mail.username");
-        String password = requireProperty(smtpProps, "mail.password");
         long minSendIntervalMs = loadIntervalProperty(smtpProps, "mail.send.minIntervalMs", MIN_SEND_INTERVAL_MS, MIN_SEND_INTERVAL_MS);
         long retryIntervalMs = loadIntervalProperty(smtpProps, "mail.retry.intervalMs", RETRY_INTERVAL_MS, 0);
-        Session session = createMailSession(smtpProps, username, password);
+        JakartaMailSender sender = JakartaMailSender.create(smtpProps);
 
         if (logFile.getParent() != null) {
             Files.createDirectories(logFile.getParent());
@@ -302,12 +333,11 @@ public class Mailer {
                 try {
                     lastSendStartNanos = enforceSendRateLimit(lastSendStartNanos, minSendIntervalMs);
 
-                    MimeMessage message = buildMimeMessage(session, username, recipientEmail, preparedEmail.subject, preparedEmail.body);
-                    Transport.send(message);
+                    sender.send(username, recipientEmail, preparedEmail.subject, preparedEmail.body);
                     appendLog(logFile, new SendLog(Instant.now(), recipientEmail, preparedEmail.subject, "SUCCESS", ""));
                     sent = true;
                     break;
-                } catch (MessagingException e) {
+                } catch (Exception e) {
                     failureReason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
                     if (attempt < MAX_RETRIES) {
                         sleepSafely(retryIntervalMs);
@@ -336,15 +366,6 @@ public class Mailer {
         properties.putIfAbsent("mail.smtp.auth", "true");
         properties.putIfAbsent("mail.smtp.starttls.enable", "true");
         return properties;
-    }
-
-    private Session createMailSession(Properties smtpProps, String username, String password) {
-        return Session.getInstance(smtpProps, new Authenticator() {
-            @Override
-            protected PasswordAuthentication getPasswordAuthentication() {
-                return new PasswordAuthentication(username, password);
-            }
-        });
     }
 
     private String requireProperty(Properties properties, String key) {
@@ -409,26 +430,22 @@ public class Mailer {
         }
     }
 
-    private MimeMessage buildMimeMessage(Session session,
-                                         String from,
-                                         String to,
-                                         String subject,
-                                         String body) throws MessagingException {
-        MimeMessage message = new MimeMessage(session);
-        message.setFrom(new InternetAddress(from));
-        message.setRecipients(Message.RecipientType.TO, InternetAddress.parse(to, false));
-        message.setSubject(subject, StandardCharsets.UTF_8.name());
-        message.setText(body, StandardCharsets.UTF_8.name());
-        message.setSentDate(new java.util.Date());
-        return message;
-    }
-
-    private byte[] toRfc822Bytes(MimeMessage message) throws IOException, MessagingException {
-        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            message.saveChanges();
-            message.writeTo(out);
-            return out.toByteArray();
-        }
+    private byte[] buildPreviewEml(String from,
+                                   String to,
+                                   String subject,
+                                   String body) {
+        String rfc1123Date = DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now(ZoneOffset.UTC));
+        StringBuilder eml = new StringBuilder();
+        eml.append("From: ").append(from).append("\r\n");
+        eml.append("To: ").append(to).append("\r\n");
+        eml.append("Subject: ").append(subject).append("\r\n");
+        eml.append("Date: ").append(rfc1123Date).append("\r\n");
+        eml.append("MIME-Version: 1.0\r\n");
+        eml.append("Content-Type: text/plain; charset=UTF-8\r\n");
+        eml.append("Content-Transfer-Encoding: 8bit\r\n");
+        eml.append("\r\n");
+        eml.append(body);
+        return eml.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     private void appendLog(Path logFile, SendLog log) throws IOException {

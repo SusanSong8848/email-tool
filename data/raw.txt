@@ -1,0 +1,8 @@
+﻿alice , Alice@Example.COM , shanghai 
+Bob;bob@example.com;Beijing
+charlie| charlie@example.com |   New   York
+Daisy, daisyexample.com, Paris
+Eve, eve@evil., LA
+Frank|frank@foo.com
+,,,
+  Grace  ; GRACE@EXAMPLE.COM ; shen zhen  
