@@ -15,7 +15,7 @@
 - 自动重试：发送失败后按策略重试。
 - 黑名单过滤：跳过指定收件人。
 - 预览模式：生成 .eml 草稿文件，不实际发送。
-- 发送日志：记录 SUCCESS、FAILED、SKIPPED 状态。
+- 发送日志：支持 SUCCESS、FAILED、SKIPPED、PREVIEW 状态。
 
 ## 技术栈
 - Java 17
@@ -27,6 +27,10 @@
 - JDK 17 或更高版本
 - Maven 3.8+
 - 可用的 SMTP 邮箱账号（用于 --send 模式）
+
+运行说明：
+- `--preview` 可直接使用 `java -cp target/classes ...` 运行。
+- `--send` 需要 Jakarta Mail 依赖在运行时类路径中（推荐用 Maven 运行）。
 
 ## 安装与构建
 1. 克隆或进入项目目录。
@@ -125,6 +129,8 @@ java -cp target/classes com.student.emailtool.cleaner.Clean -i raw2.txt -o email
 
 模板要求：
 - 支持邮件头与正文混排的纯文本模板
+- 头部区域必须包含 `Subject:`，`To:` 等其他头部可选
+- 头部与正文之间用一个空行分隔
 - 支持占位符：{name}、{email}、{city}
 
 样例 3（邮件预览，读取样例 1 生成的 clean.txt 与模板，使用样例 2 生成的 emails.txt，输出 outbox/*.eml）：
@@ -142,10 +148,21 @@ See you at the club!
 java -cp target/classes com.student.emailtool.mailer.Mailer -e emails.txt -c clean.txt -t template.txt --preview
 ```
 
+预览模式写日志示例（可选）：
+
+```powershell
+java -cp target/classes com.student.emailtool.mailer.Mailer -e emails.txt -c clean.txt -t template.txt --preview --log out/sent.log
+```
+
+示例日志状态说明：
+- `PREVIEW`：已成功生成 `.eml` 预览文件
+- `SKIPPED`：被黑名单过滤或联系人缺失
+- `FAILED`：预览文件写入失败
+
 发送模式示例：
 
 ```bash
-java -cp target/classes com.student.emailtool.mailer.Mailer -e emails.txt -c contacts_clean.csv -t template.txt --send --log sent.log --blacklist blacklist.txt
+mvn -q exec:java -Dexec.mainClass=com.student.emailtool.mailer.Mailer -Dexec.args="-e emails.txt -c contacts_clean.csv -t template.txt --send --log sent.log --blacklist blacklist.txt"
 ```
 
 常用参数：
@@ -154,8 +171,11 @@ java -cp target/classes com.student.emailtool.mailer.Mailer -e emails.txt -c con
 - -t <template.txt>：邮件模板（必填）
 - --preview：预览模式，输出到 outbox/
 - --send：实际发送模式
-- --log <sent.log>：发送日志（--send 必填）
+- --log <sent.log>：日志文件（--send 必填，--preview 可选）
 - --blacklist <file>：黑名单文件（可选）
+
+PowerShell 输入文件建议：
+- 若使用 PowerShell 5.1，建议用 `Set-Content -Encoding utf8NoBOM`，避免 UTF-8 BOM 导致首字符异常（如 `Alice` 变成乱码前缀）。
 
 ## 测试
 当前包含 JUnit 5 单元测试：
@@ -178,6 +198,7 @@ email-tool/
 │  │     ├─ cleaner/
 │  │     │  └─ Clean.java
 │  │     ├─ mailer/
+│  │     │  ├─ JakartaMailSender.java
 │  │     │  └─ Mailer.java
 │  │     ├─ model/
 │  │     │  ├─ Contact.java
