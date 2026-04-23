@@ -253,4 +253,4 @@ email-tool/
 [Java邮件工具类初始化错误分析](src/docs/chat7.json)
 
 # 远程仓库 URL：
-__https://github.com/SusanSong8848/email-tool.git__ 本项目以同步到本人的Git远程仓库
+**https://github.com/SusanSong8848/email-tool.git** 本项目以同步到本人的Git远程仓库
